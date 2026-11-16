@@ -85,8 +85,12 @@ function geminiDotDir() {
 function geminiEnv(exe, settings = {}) {
   const extra = [...(exe ? [path.dirname(exe)] : []), ...runtimeDirs()];
   if (!IS_WIN) extra.push('/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin');
+  const cleanEnv = { ...process.env };
+  for (const k of Object.keys(cleanEnv)) {
+    if (/^(ANTIGRAVITY_|VSCODE_|TERM_PROGRAM|SURFACE)/.test(k)) delete cleanEnv[k];
+  }
   const env = {
-    ...process.env,
+    ...cleanEnv,
     PATH: [...extra, process.env.PATH || ''].join(path.delimiter),
     GEMINI_CLI_HOME: geminiHomeDir(),
     GOOGLE_GENAI_USE_GCA: 'true',
@@ -142,6 +146,23 @@ function quoteWin(a) {
  * Ensure `.gemini/settings.json` has `security.auth.selectedType = "oauth-personal"`
  * so non-interactive `gemini -p` calls know to use the Google account sign-in.
  */
+function ensureTrustedFolder(folderPath) {
+  try {
+    const dir = geminiDotDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'trustedFolders.json');
+    let obj = {};
+    if (fs.existsSync(file)) {
+      try { obj = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; } catch { obj = {}; }
+    }
+    const norm = path.resolve(folderPath);
+    if (obj[norm] !== 'TRUST_FOLDER') {
+      obj[norm] = 'TRUST_FOLDER';
+      fs.writeFileSync(file, JSON.stringify(obj, null, 2), 'utf8');
+    }
+  } catch { /* ignore */ }
+}
+
 function ensureGeminiOauthSetting() {
   try {
     const dir = geminiDotDir();
@@ -264,6 +285,7 @@ function startGoogleOAuthSignIn(openUrlFn) {
       }
 
       ensureGeminiOauthSetting();
+  ensureTrustedFolder(workDir());
 
       const server = net.createServer();
       server.listen(0, '127.0.0.1', () => {
@@ -349,6 +371,7 @@ function launchCallbackServer(port, openUrlFn, resolve) {
       fs.mkdirSync(dotDir, { recursive: true });
       fs.writeFileSync(path.join(dotDir, 'oauth_creds.json'), JSON.stringify(creds, null, 2), 'utf8');
       ensureGeminiOauthSetting();
+  ensureTrustedFolder(workDir());
 
       // Fetch user email for display
       try {
@@ -545,6 +568,7 @@ class GeminiEngine {
 
   _sendViaCli(userText, onDelta, opts = {}) {
     ensureGeminiOauthSetting();
+  ensureTrustedFolder(workDir());
 
     const prompt = [
       this.system,
@@ -643,6 +667,9 @@ class GeminiEngine {
 
 function explainGemini(msg) {
   const m = String(msg || '');
+  if (/IneligibleTierError|no longer supported for Gemini Code Assist for individuals/i.test(m)) {
+    return 'Google now requires a free Google AI Studio API key for personal accounts (or a Google Cloud Project ID). Open Dashboard -> Settings -> click "Get free Gemini API key (Google AI Studio)" and paste it in!';
+  }
   if (/Manual authorization is required|Authentication consent|not logged in|oauth|unauthori[sz]ed|401|sign in|Please set an Auth method/i.test(m)) {
     return 'Google Gemini is not signed in yet. Click "Sign in with Google Gemini" on the Dashboard and finish signing in with your Google AI Pro account.';
   }
