@@ -25,7 +25,7 @@ const APP_ROOT = path.join(__dirname, '..', '..');
 const RUNTIME = path.join(APP_ROOT, '.runtime');
 const GEMINI_HOME = path.join(APP_ROOT, 'data', 'gemini-home');
 
-const DEFAULT_GEMINI_MODEL = 'gemini-2.5-flash';
+const DEFAULT_GEMINI_MODEL = 'gemini-3-flash-preview';
 
 /**
  * Read the official installed-app OAuth client ID and secret directly from the
@@ -196,6 +196,9 @@ function geminiStatus(explicit, geminiKey = '') {
       exe,
       detail: process.env.FAKE_GEMINI_STATE === 'in' ? 'Signed in (test)' : 'Not signed in',
     };
+  }
+  if (process.env.FAKE_CLAUDE_STATE || process.env.FAKE_CODEX_STATE) {
+    return { installed: false, signedIn: false, exe: null, detail: 'Not installed (test)' };
   }
   const key = String(geminiKey || process.env.GEMINI_API_KEY || '').trim();
   const exe = findGemini(explicit);
@@ -486,15 +489,19 @@ class GeminiEngine {
   async _sendViaApi(userText, onDelta, opts = {}) {
     const controller = new AbortController();
     this._abort = controller;
-    const model = this.model || DEFAULT_GEMINI_MODEL;
+    let model = this.model || DEFAULT_GEMINI_MODEL;
+    if (model === 'gemini-2.5-flash') model = 'gemini-3-flash-preview';
+    if (model === 'gemini-2.5-pro' || model === 'gemini-3-pro-preview') model = 'gemini-3.1-pro-preview';
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(this.apiKey)}`;
 
+    const supportsMinimalThinking = /^gemini-3(-flash-preview|\.1-flash-lite)/i.test(model);
     const body = {
       ...(this.system ? { systemInstruction: { parts: [{ text: this.system }] } } : {}),
       contents: [{ role: 'user', parts: [{ text: userText }] }],
       generationConfig: {
         temperature: opts.temperature != null ? opts.temperature : 0.35,
         maxOutputTokens: opts.maxTokens || 500,
+        ...(supportsMinimalThinking ? { thinkingConfig: { thinkingLevel: 'MINIMAL' } } : {}),
       },
     };
 
@@ -547,6 +554,7 @@ class GeminiEngine {
             const j = JSON.parse(payload);
             const parts = j?.candidates?.[0]?.content?.parts || [];
             for (const p of parts) {
+              if (p.thought) continue;
               if (p.text) {
                 full += p.text;
                 if (onDelta) onDelta(p.text, full);

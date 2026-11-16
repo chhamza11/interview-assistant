@@ -64,7 +64,7 @@ const DEFAULT_SETTINGS = {
     codexModel: '',          // empty = the default model for a ChatGPT sign-in
     codexEffort: 'low',      // the fastest effort the ChatGPT sign-in accepts
     geminiPath: '',          // optional: full path to the gemini binary if it is not found
-    geminiModel: 'gemini-2.5-flash',
+    geminiModel: 'gemini-3-flash-preview',
     geminiKey: '',           // optional: Gemini API key for direct streaming
     fallbackToOpenAI: true,  // if main brain fails mid-meeting, keep answering with a backup brain
   },
