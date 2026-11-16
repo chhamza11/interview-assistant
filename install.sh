@@ -104,7 +104,8 @@ if [ -z "$UV" ]; then
   UV="$RT/uv/uv"
 fi
 [ -x "$DIR/.venv/bin/python3" ] || "$UV" venv --quiet --seed --python 3.12 "$DIR/.venv"
-"$UV" pip install --quiet --python "$DIR/.venv/bin/python3" -r "$DIR/audio/requirements-mac.txt"
+info "downloading the speech packages, about 130 MB: 2 to 30 minutes depending on your internet"
+"$UV" pip install --python "$DIR/.venv/bin/python3" -r "$DIR/audio/requirements-mac.txt"
 info "$("$DIR/.venv/bin/python3" -V)"
 
 # --------------------------------------------------------------- app packages

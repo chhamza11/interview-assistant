@@ -33,10 +33,11 @@ if errorlevel 1 goto :fail
 echo.
 
 echo [3/5] Installing Python audio packages into .venv ...
+echo     About 130 MB to download. On a slow connection this takes 10 to 30 minutes.
 if not exist ".venv\Scripts\python.exe" %PY% -m venv .venv
 if errorlevel 1 goto :fail
 ".venv\Scripts\python.exe" -m pip install -q --upgrade pip
-".venv\Scripts\python.exe" -m pip install -q -r audio\requirements.txt
+".venv\Scripts\python.exe" -m pip install --progress-bar on -r audio\requirements.txt
 if errorlevel 1 goto :fail
 echo.
 

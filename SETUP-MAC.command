@@ -31,9 +31,10 @@ echo "[2/5] Node packages..."
 npm install --no-fund --no-audit || fail "npm install failed. Check your internet connection and run this again."
 
 echo "[3/5] Python audio packages (into ./.venv)..."
+echo "    About 130 MB to download. On a slow connection this takes 10 to 30 minutes."
 [ -x .venv/bin/python3 ] || "$PY" -m venv .venv || fail "Could not create the Python environment."
 ./.venv/bin/python3 -m pip install -q --upgrade pip
-./.venv/bin/python3 -m pip install -q -r audio/requirements-mac.txt \
+./.venv/bin/python3 -m pip install --progress-bar on -r audio/requirements-mac.txt \
   || fail "pip install failed. If the error mentions conflicting dependencies, your Python is too new for the speech packages: install Python 3.12 from https://python.org, delete the .venv folder, and run this again."
 
 echo "[4/5] Building the system-audio helper..."

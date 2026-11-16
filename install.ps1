@@ -131,7 +131,8 @@ try {
   }
   $py = Join-Path $Dir '.venv\Scripts\python.exe'
   if (-not (Test-Path $py)) { Run $uv @('venv', '--quiet', '--seed', '--python', '3.12', (Join-Path $Dir '.venv')) }
-  Run $uv @('pip', 'install', '--quiet', '--python', $py, '-r', (Join-Path $Dir 'audio\requirements.txt'))
+  Info 'downloading the speech packages, about 130 MB: 2 to 30 minutes depending on your internet'
+  Run $uv @('pip', 'install', '--python', $py, '-r', (Join-Path $Dir 'audio\requirements.txt'))
   Info "$(& $py -V)"
 
   # ------------------------------------------------------------- app packages
