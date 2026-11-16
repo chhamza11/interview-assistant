@@ -33,6 +33,7 @@ const sharewatch = require('./sharewatch');
 const { Companion } = require('./companion');
 const { Brain, clarifyBrief, summariseTranscript } = require('./brain');
 const { codexStatus } = require('./codex');
+const { geminiStatus } = require('./gemini');
 const ai = require('./ai');
 const { TurnBuffer } = require('./turnbuffer');
 
@@ -317,17 +318,19 @@ async function startListening(meetingId) {
 
   settings = store.getSettings();
 
+  const effBrief = store.effectiveBrief(meeting.brief, settings.profile);
+
   // Brain first: it is the slow one to warm up, and it can warm up while audio
   // models are still loading.
   brain = new Brain();
   wireBrain();
-  await brain.start(meeting.brief, brainSettings(settings.brain));
+  await brain.start(effBrief, brainSettings(settings.brain));
 
   bridge = new AudioBridge();
   wireBridge();
   // Give the speech service the brief's jargon up front. Applying it afterwards
   // forces the stream to reconnect, and reconnects cost audio.
-  const terms = collectTerms(meeting.brief);
+  const terms = collectTerms(effBrief);
   const audioCfg = { ...settings.audio, cloud: { ...settings.audio.cloud, keywords: terms } };
   const ok = await bridge.start(audioCfg);
   if (!ok) return { ok: false, error: bridge.lastError };
@@ -659,7 +662,7 @@ function registerIpc() {
   ipcMain.handle('ai:status', () => ai.detect(store.getSettings().brain));
   ipcMain.handle('ai:signin', (_e, which) => ai.signIn(which, store.getSettings().brain));
   ipcMain.handle('ai:use', (_e, provider) => {
-    if (!['claude', 'codex', 'openai'].includes(provider)) return { ok: false };
+    if (!['claude', 'gemini', 'codex', 'openai'].includes(provider)) return { ok: false };
     store.saveSettings({ brain: { provider } });
     return { ok: true };
   });
@@ -710,7 +713,7 @@ function registerIpc() {
   // Prep questions work with no meeting running.
   ipcMain.handle('brain:clarify', async (_e, brief) => {
     const s = store.getSettings();
-    return clarifyBrief(brief, brainSettings(s.brain));
+    return clarifyBrief(store.effectiveBrief(brief, s.profile), brainSettings(s.brain));
   });
 
   // Summarise ANY meeting, live or reopened months later.
@@ -718,7 +721,7 @@ function registerIpc() {
     const m = id ? store.getMeeting(id) : meeting;
     if (!m) return { ok: false, error: 'Meeting not found.' };
     const s = store.getSettings();
-    const r = await summariseTranscript(m.transcript, m.brief, brainSettings(s.brain));
+    const r = await summariseTranscript(m.transcript, store.effectiveBrief(m.brief, s.profile), brainSettings(s.brain));
     if (r.ok) {
       m.summary = r.summary;
       store.saveMeeting(m);
@@ -891,7 +894,15 @@ async function runDoctor() {
   out.capture = await measureCapture();
 
   const provider = (store.getSettings().brain.provider || 'claude').toLowerCase();
-  if (provider === 'codex') {
+  if (provider === 'gemini') {
+    const b = store.getSettings().brain;
+    const g = geminiStatus(b.geminiPath, b.geminiKey);
+    out.claude = !g.installed
+      ? { ok: false, detail: 'Google Gemini is selected, but the Gemini CLI is not installed.' }
+      : g.signedIn
+        ? { ok: true, detail: g.detail || 'Google Gemini is signed in and ready.' }
+        : { ok: false, detail: 'Gemini CLI is installed but not signed in. Click Sign in with Google Gemini on the Dashboard.' };
+  } else if (provider === 'codex') {
     // ChatGPT is checked for real here: it is a quick local command, no network.
     const c = codexStatus(store.getSettings().brain.codexPath);
     out.claude = !c.installed

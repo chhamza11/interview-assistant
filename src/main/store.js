@@ -4,7 +4,7 @@
  * rebuild risk on this machine, and a meeting's worth of text is tiny.
  *
  * data/
- *   settings.json          app-wide settings
+ *   settings.json          app-wide settings (including persistent CV/profile)
  *   meetings/<id>.json     one file per meeting: brief + transcript + notes
  */
 
@@ -57,13 +57,29 @@ const DEFAULT_SETTINGS = {
     suggestions: true,
     mock: false,
     apiKey: '',              // Anthropic key: only if the CLI cannot use the subscription
-    provider: 'claude',      // 'claude' | 'codex' (ChatGPT subscription) | 'openai' (API key)
+    provider: 'claude',      // 'claude' | 'gemini' (Google AI Pro) | 'codex' (ChatGPT subscription) | 'openai' (API key)
     openaiKey: '',           // OpenAI API key, only for provider 'openai'
     openaiModel: 'gpt-4o-mini',
     codexPath: '',           // optional: full path to the codex binary if it is not found
     codexModel: '',          // empty = the default model for a ChatGPT sign-in
     codexEffort: 'low',      // the fastest effort the ChatGPT sign-in accepts
-    fallbackToOpenAI: true,  // if Claude fails mid-meeting, keep answering with a backup brain
+    geminiPath: '',          // optional: full path to the gemini binary if it is not found
+    geminiModel: 'gemini-2.5-flash',
+    geminiKey: '',           // optional: Gemini API key for direct streaming
+    fallbackToOpenAI: true,  // if main brain fails mid-meeting, keep answering with a backup brain
+  },
+  // Persistent CV, role & company profile. Automatically pre-fills new meetings
+  // and merges into the AI system prompt so internal interviews and live calls
+  // always have your CV, company background, and role.
+  profile: {
+    kind: 'internal interview',
+    company: '',
+    role: '',
+    otherSide: '',
+    goal: '',
+    background: '',
+    terms: [],
+    autoSync: true,
   },
   // Read the answers on your phone instead of on screen. The only way to be
   // invisible in EVERY share mode, including entire-screen, on hardware that
@@ -135,6 +151,37 @@ function saveSettings(patch) {
   return next;
 }
 
+/**
+ * Merge a meeting brief with the user's persistent default CV & profile so
+ * any empty field on the meeting automatically inherits from `settings.profile`.
+ */
+function effectiveBrief(brief, profile) {
+  const b = brief || {};
+  const p = profile || getSettings().profile || {};
+  const has = (v) => v && String(v).trim();
+
+  let bg = String(b.background || '').trim();
+  const pBg = String(p.background || '').trim();
+  if (!bg && pBg) {
+    bg = pBg;
+  } else if (bg && pBg && !bg.includes(pBg.slice(0, Math.min(80, pBg.length)))) {
+    bg = `${bg}\n\n--- MY DEFAULT CV & PROFILE ---\n${pBg}`;
+  }
+
+  const terms = [...new Set([...(b.terms || []), ...(p.terms || [])].map((t) => String(t || '').trim()).filter(Boolean))];
+
+  return {
+    ...b,
+    kind: has(b.kind) ? b.kind : (p.kind || 'internal interview'),
+    company: has(b.company) ? b.company : (p.company || ''),
+    role: has(b.role) ? b.role : (p.role || ''),
+    otherSide: has(b.otherSide) ? b.otherSide : (p.otherSide || ''),
+    goal: has(b.goal) ? b.goal : (p.goal || ''),
+    background: bg,
+    terms,
+  };
+}
+
 // ---------- meetings ----------
 
 function newId() {
@@ -144,26 +191,27 @@ function newId() {
 }
 
 function blankMeeting(id) {
+  const prof = getSettings().profile || {};
   return {
     id,
     createdAt: new Date().toISOString(),
     endedAt: null,
     brief: {
       title: '',
-      kind: 'client call',        // interview | client call | sales | standup | other
-      company: '',
-      role: '',
-      otherSide: '',              // who is on the call
-      goal: '',                   // what a win looks like
-      background: '',             // my skills / product / the deal so far
-      terms: [],                  // jargon, names, products -> Whisper hotwords
+      kind: prof.kind || 'internal interview', // internal interview | technical interview | interview | client call | sales | standup | other
+      company: prof.company || '',
+      role: prof.role || '',
+      otherSide: prof.otherSide || '',         // who is on the call
+      goal: prof.goal || '',                   // what a win looks like
+      background: prof.background || '',       // my CV / skills / company context / prepared lines
+      terms: Array.isArray(prof.terms) ? [...prof.terms] : [], // jargon, names, products -> Whisper hotwords
       questionsToAsk: [],
-      docs: [],                   // pasted reference material
+      docs: [],                                // pasted reference material
     },
-    prep: { clarifiers: [], answers: {} },  // Claude's pre-meeting questions
-    transcript: [],               // {role, text, at, dur}
-    answers: [],                  // {forTurn, text, at, usedIt}
-    notes: [],                    // {text, at, kind}
+    prep: { clarifiers: [], answers: {} },     // AI's pre-meeting questions
+    transcript: [],                            // {role, text, at, dur}
+    answers: [],                               // {forTurn, text, at, usedIt}
+    notes: [],                                 // {text, at, kind}
     summary: null,
   };
 }
@@ -180,12 +228,48 @@ function createMeeting() {
 }
 
 function getMeeting(id) {
-  return readJSON(meetingPath(id), null);
+  const m = readJSON(meetingPath(id), null);
+  if (!m) return null;
+  // Backfill any completely empty brief fields from the saved profile so
+  // existing empty meetings immediately show the user's saved CV/company info.
+  const prof = getSettings().profile || {};
+  if (m.brief) {
+    if (!m.brief.company && prof.company) m.brief.company = prof.company;
+    if (!m.brief.role && prof.role) m.brief.role = prof.role;
+    if (!m.brief.otherSide && prof.otherSide) m.brief.otherSide = prof.otherSide;
+    if (!m.brief.goal && prof.goal) m.brief.goal = prof.goal;
+    if (!m.brief.background && prof.background) m.brief.background = prof.background;
+    if ((!m.brief.terms || !m.brief.terms.length) && Array.isArray(prof.terms) && prof.terms.length) {
+      m.brief.terms = [...prof.terms];
+    }
+  }
+  return m;
 }
 
 function saveMeeting(m) {
   if (!m || !m.id) return null;
   writeJSON(meetingPath(m.id), m);
+  // If autoSync is enabled (or default profile is empty), keep the default
+  // profile updated with the latest non-empty CV/company/role fields so
+  // future meetings and internal interviews automatically have them.
+  try {
+    const s = getSettings();
+    const p = s.profile || {};
+    if (p.autoSync !== false && m.brief) {
+      const b = m.brief;
+      const patch = {};
+      if (b.kind) patch.kind = b.kind;
+      if (b.company && String(b.company).trim()) patch.company = String(b.company).trim();
+      if (b.role && String(b.role).trim()) patch.role = String(b.role).trim();
+      if (b.otherSide && String(b.otherSide).trim()) patch.otherSide = String(b.otherSide).trim();
+      if (b.goal && String(b.goal).trim()) patch.goal = String(b.goal).trim();
+      if (b.background && String(b.background).trim()) patch.background = String(b.background).trim();
+      if (Array.isArray(b.terms) && b.terms.length) patch.terms = b.terms;
+      if (Object.keys(patch).length) {
+        saveSettings({ profile: patch });
+      }
+    }
+  } catch { /* ignore */ }
   return m;
 }
 
@@ -218,7 +302,7 @@ function deleteMeeting(id) {
 
 module.exports = {
   ROOT, MEETINGS,
-  getSettings, saveSettings, DEFAULT_SETTINGS,
+  getSettings, saveSettings, DEFAULT_SETTINGS, effectiveBrief,
   createMeeting, getMeeting, saveMeeting, listMeetings, deleteMeeting,
   blankMeeting, newId,
 };

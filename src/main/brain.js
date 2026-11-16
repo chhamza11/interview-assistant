@@ -21,6 +21,7 @@
 const { EventEmitter } = require('events');
 const { OpenAIEngine } = require('./openai');
 const { CodexEngine } = require('./codex');
+const { GeminiEngine } = require('./gemini');
 
 /**
  * Environment for the spawned Claude CLI.
@@ -255,6 +256,21 @@ function buildSystem(brief, settings) {
   );
 
   const has = (v) => v && String(v).trim();
+  const isInterview = /interview/i.test(String(b.kind || ''));
+  if (isInterview) {
+    lines.push(
+      '',
+      'INTERNAL & TECHNICAL INTERVIEW GUIDANCE',
+      '- My person is in an interview (such as an internal company interview or technical evaluation).',
+      '- When asked "Introduce yourself", "Tell me about yourself", or about their background/role,',
+      '  immediately use their CV, role, and company details from the brief below to craft a natural,',
+      '  confident 45-80 word first-person introduction highlighting their current role, key technical',
+      '  strengths, and impact at the company.',
+      '- For technical, architecture, or behavioral questions: start Sentence 1 with the direct answer',
+      '  or approach, then ground it in a concrete project, system, or responsibility from their CV/brief,',
+      '  and finish with the practical outcome or trade-off.',
+    );
+  }
   const ctx = [];
   if (has(b.kind)) ctx.push(`Type of meeting: ${b.kind}`);
   if (has(b.title)) ctx.push(`Meeting: ${b.title}`);
@@ -300,7 +316,7 @@ async function askOnce(system, user, settings = {}) {
     // One-shot: if another brain is chosen, use it here too so prep and
     // summaries do not silently fall back to a Claude session that may not exist.
     const provider = (settings.provider || 'claude').toLowerCase();
-    if (provider === 'openai' || provider === 'codex') {
+    if (provider === 'openai' || provider === 'codex' || provider === 'gemini') {
       const engine = makeStateless(provider, settings);
       if (!engine.configured) return { ok: false, error: notConfigured(provider) };
       engine.setSystem(system);
@@ -435,10 +451,12 @@ async function summariseTranscript(transcript, brief, settings = {}) {
 
 /** The brains that keep no session: every request carries its own context. */
 function makeStateless(provider, settings) {
+  if (provider === 'gemini') return new GeminiEngine(settings, () => {});
   return provider === 'codex' ? new CodexEngine(settings, () => {}) : new OpenAIEngine(settings, () => {});
 }
 
 function notConfigured(provider) {
+  if (provider === 'gemini') return 'Google Gemini is selected but not configured. Click "Sign in with Google Gemini" on the Dashboard, or add a Gemini API key in Settings.';
   return provider === 'codex'
     ? 'ChatGPT is selected but the Codex CLI is not installed. Run the install line again with ChatGPT chosen (see the README).'
     : 'OpenAI is selected but no API key is set (Dashboard - Settings).';
@@ -502,12 +520,13 @@ class Brain extends EventEmitter {
     this.backup = null;
     if (this.provider === 'claude' && this.settings.fallbackToOpenAI !== false) {
       const openai = new OpenAIEngine(this.settings, () => {});
-      const codex = openai.configured ? null : new CodexEngine(this.settings, () => {});
-      this.backup = openai.configured ? openai : (codex && codex.configured ? codex : null);
+      const gemini = openai.configured ? null : new GeminiEngine(this.settings, () => {});
+      const codex = (openai.configured || (gemini && gemini.configured)) ? null : new CodexEngine(this.settings, () => {});
+      this.backup = openai.configured ? openai : (gemini && gemini.configured ? gemini : (codex && codex.configured ? codex : null));
       if (this.backup) this.backup.setSystem(system);
     }
 
-    if (this.provider === 'openai' || this.provider === 'codex') {
+    if (this.provider === 'openai' || this.provider === 'codex' || this.provider === 'gemini') {
       this.engine = makeStateless(this.provider, this.settings);
       if (!this.engine.configured) {
         this.ready = false;
@@ -638,7 +657,7 @@ class Brain extends EventEmitter {
               && this.backup && p.userText;
 
             if (canFallback) {
-              this.emit('status', { fallback: this.backup instanceof CodexEngine ? 'codex' : 'openai', reason: msg });
+              this.emit('status', { fallback: this.backup instanceof CodexEngine ? 'codex' : (this.backup instanceof GeminiEngine ? 'gemini' : 'openai'), reason: msg });
               this._sendStateless(this.backup, p, p.userText);
             } else if (p && p.kind !== 'prewarm') {
               this.emit('error', { id: p.id, kind: p.kind, message: msg });

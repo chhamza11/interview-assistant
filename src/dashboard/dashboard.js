@@ -54,7 +54,7 @@ async function load(id) {
   if (!current) return;
   const b = current.brief;
   $('title').value = b.title || '';
-  $('kind').value = b.kind || 'client call';
+  $('kind').value = b.kind || 'internal interview';
   $('company').value = b.company || '';
   $('role').value = b.role || '';
   $('otherSide').value = b.otherSide || '';
@@ -94,9 +94,43 @@ function collectBrief() {
 $('saveBrief').onclick = async () => {
   if (!collectBrief()) return;
   current = await api.saveMeeting(current);
+  await api.saveSettings({
+    profile: {
+      kind: current.brief.kind,
+      company: current.brief.company,
+      role: current.brief.role,
+      otherSide: current.brief.otherSide,
+      goal: current.brief.goal,
+      background: current.brief.background,
+      terms: current.brief.terms,
+      autoSync: true,
+    },
+  });
   flash($('savedMsg'));
   refreshList();
 };
+
+if ($('loadDefaultProfile')) {
+  $('loadDefaultProfile').onclick = async () => {
+    const s = await api.getSettings();
+    const p = s.profile || {};
+    if (!p.background && !p.company && !p.role) {
+      showErr('No default CV profile saved yet. Fill in your CV, company and role above, then click Save brief & default CV profile.');
+      return;
+    }
+    if (p.kind) $('kind').value = p.kind;
+    if (p.company) $('company').value = p.company;
+    if (p.role) $('role').value = p.role;
+    if (p.otherSide) $('otherSide').value = p.otherSide;
+    if (p.goal) $('goal').value = p.goal;
+    if (p.background) $('background').value = p.background;
+    if (Array.isArray(p.terms) && p.terms.length) $('terms').value = p.terms.join(', ');
+    collectBrief();
+    if (current) current = await api.saveMeeting(current);
+    flash($('savedMsg'));
+    hideErr();
+  };
+}
 
 // ---------------- prep questions ----------------
 
@@ -175,14 +209,13 @@ $('startBtn').onclick = async () => {
     const NL = String.fromCharCode(10);
     const chars = $('background').value.trim().length;
     const go = confirm([
-      'Your prepared material is nearly empty (' + chars + ' characters).',
+      'Your CV / prepared material is nearly empty (' + chars + ' characters).',
       '',
       'With nothing to draw on, the assistant can only speak in generalities, and it',
       'will refuse to claim any experience, results or prices you have not written',
-      'down. If the client asks "have you done this before?", the honest answer',
-      'will be no.',
+      'down.',
       '',
-      'Paste your real experience, past results, prices and prepared lines first.',
+      'Paste your real CV, experience, company details, and prepared lines first.',
       '',
       'Start anyway?',
     ].join(NL));
@@ -305,6 +338,8 @@ async function loadSettings() {
   $('sKey').value = s.audio.cloud?.api_key || '';
   $('sAnthropicKey').value = s.brain.apiKey || '';
   $('sProvider').value = s.brain.provider || 'claude';
+  if ($('sGeminiModel')) $('sGeminiModel').value = s.brain.geminiModel || 'gemini-2.5-flash';
+  if ($('sGeminiKey')) $('sGeminiKey').value = s.brain.geminiKey || '';
   $('sOpenaiModel').value = s.brain.openaiModel || 'gpt-4o-mini';
   $('sOpenaiKey').value = s.brain.openaiKey || '';
   $('sFallback').checked = s.brain.fallbackToOpenAI !== false;
@@ -327,6 +362,8 @@ $('saveSettings').onclick = async () => {
       mock: $('sMock').checked,
       apiKey: $('sAnthropicKey').value.trim(),
       provider: $('sProvider').value,
+      geminiModel: $('sGeminiModel') ? $('sGeminiModel').value : 'gemini-2.5-flash',
+      geminiKey: $('sGeminiKey') ? $('sGeminiKey').value.trim() : '',
       openaiModel: $('sOpenaiModel').value,
       openaiKey: $('sOpenaiKey').value.trim(),
       fallbackToOpenAI: $('sFallback').checked,
@@ -342,6 +379,7 @@ $('saveSettings').onclick = async () => {
       cloud: { api_key: $('sKey').value.trim() },
     },
   });
+  await refreshAI();
   flash($('setMsg'));
 };
 
@@ -538,7 +576,7 @@ api.on('note', () => current && renderNotes(current.notes || []));
 
 // ---------------- AI connection ----------------
 
-const AI_NAMES = { claude: 'Claude', codex: 'ChatGPT', openai: 'OpenAI API' };
+const AI_NAMES = { claude: 'Claude', gemini: 'Google Gemini', codex: 'ChatGPT', openai: 'OpenAI API' };
 let aiWatch = null;
 
 /** Show the connect card until an AI is signed in, and name the one in use. */
@@ -548,6 +586,10 @@ async function refreshAI() {
   $('connect').classList.toggle('hidden', d.ready);
   $('aiUsing').innerHTML = d.ready ? `AI: <b>${AI_NAMES[d.use] || d.use}</b>` : 'AI: not connected';
   // Name the buttons after what is actually on this computer.
+  if ($('signGemini') && d.gemini) {
+    $('signGemini').textContent = d.gemini.installed ? 'Sign in with Google Gemini' : 'Google Gemini not installed';
+    $('signGemini').disabled = !d.gemini.installed;
+  }
   $('signClaude').textContent = d.claude.installed ? 'Sign in with Claude' : 'Claude not installed';
   $('signClaude').disabled = !d.claude.installed;
   $('signChatgpt').textContent = d.chatgpt.installed ? 'Sign in with ChatGPT' : 'ChatGPT not installed';
@@ -564,10 +606,10 @@ async function startSignIn(which) {
   const started = Date.now();
   aiWatch = setInterval(async () => {
     const d = await refreshAI();
-    const done = d && (which === 'claude' ? d.claude.signedIn : d.chatgpt.signedIn);
+    const done = d && (which === 'claude' ? d.claude.signedIn : which === 'gemini' ? (d.gemini && d.gemini.signedIn) : d.chatgpt.signedIn);
     if (done) {
       clearInterval(aiWatch);
-      await api.aiUse(which === 'claude' ? 'claude' : 'codex');
+      await api.aiUse(which === 'claude' ? 'claude' : which === 'gemini' ? 'gemini' : 'codex');
       $('connect').classList.remove('waiting');
       await refreshAI();
       await loadSettings();
@@ -579,6 +621,7 @@ async function startSignIn(which) {
   }, 2500);
 }
 
+if ($('signGemini')) $('signGemini').onclick = () => startSignIn('gemini');
 $('signClaude').onclick = () => startSignIn('claude');
 $('signChatgpt').onclick = () => startSignIn('chatgpt');
 

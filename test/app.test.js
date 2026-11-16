@@ -347,3 +347,42 @@ test("codex: the installer's own Node and Codex come first on the CLI's PATH", (
   const node = process.platform === 'win32' ? path.join(rt, 'node') : path.join(rt, 'node', 'bin');
   assert.ok(parts.indexOf(node) > 0 && parts.indexOf(node) < 4, 'own Node is near the front');
 });
+
+// ----------------------------------------------------------- Gemini (Google AI Pro) & Persistent CV Profile
+
+test('gemini: streams reply chunks through the Gemini CLI', async () => {
+  const { GeminiEngine } = require('../src/main/gemini');
+  const e = new GeminiEngine({ geminiPath: fakeCli('gemini', 'fake-gemini.js') });
+  assert.equal(e.configured, true);
+  e.setSystem('SYSTEM');
+  const chunks = [];
+  const reply = await e.send('Introduce yourself', (c) => chunks.push(c));
+  assert.match(reply, /^gemini heard \d+ characters$/);
+  assert.ok(chunks.length >= 2, 'should stream delta chunks');
+});
+
+test('brain: Google Gemini as the main brain answers an interview question', async () => {
+  const b = new Brain();
+  const ok = await b.start(
+    { kind: 'internal interview', company: 'TechCorp', role: 'Senior AI Engineer', background: 'Built RAG pipeline handling 50k req/day' },
+    { provider: 'gemini', geminiPath: fakeCli('gemini', 'fake-gemini.js') }
+  );
+  assert.equal(ok, true);
+  const id = b.answer('Please introduce yourself and tell us about your work.', []);
+  const r = await settle(b, id);
+  assert.equal(r.kind, 'done', JSON.stringify(r.event));
+  assert.match(r.event.text, /^gemini heard \d+ characters$/);
+  await b.stop();
+});
+
+test('store: effectiveBrief merges persistent default CV & company profile into empty meetings', () => {
+  const store = require('../src/main/store');
+  const merged = store.effectiveBrief(
+    { title: 'Round 2', kind: 'internal interview', company: '', role: '', background: '', terms: ['FastAPI'] },
+    { kind: 'internal interview', company: 'MyCompany', role: 'Lead Developer', background: 'CV: 5 years Python & React', terms: ['Kubernetes', 'FastAPI'] }
+  );
+  assert.equal(merged.company, 'MyCompany');
+  assert.equal(merged.role, 'Lead Developer');
+  assert.match(merged.background, /5 years Python/);
+  assert.deepEqual(merged.terms, ['FastAPI', 'Kubernetes']);
+});

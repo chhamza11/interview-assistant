@@ -2,13 +2,10 @@
 /**
  * Which AI can write the answers on this computer, and signing in to it.
  *
- * Two subscriptions can drive the app, each through its own command-line tool:
+ * Three subscriptions can drive the app:
  *   Claude   the Claude Code CLI      claude auth status --json / claude auth login
  *   ChatGPT  the Codex CLI            codex login status        / codex login
- *
- * The app checks both, uses whichever is signed in, and when neither is it
- * offers a button that starts the tool's own sign-in. That sign-in opens the
- * browser and finishes there, so nobody has to type anything into a terminal.
+ *   Gemini   Google AI Pro / Gemini   direct browser OAuth -> data/gemini-home/.gemini/oauth_creds.json
  */
 
 const fs = require('fs');
@@ -16,6 +13,7 @@ const os = require('os');
 const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 const { findCodex, codexEnv } = require('./codex');
+const { findGemini, geminiStatus, startGoogleOAuthSignIn } = require('./gemini');
 
 const IS_WIN = process.platform === 'win32';
 
@@ -25,7 +23,6 @@ function findClaude(explicit) {
   const home = os.homedir();
   const names = IS_WIN ? ['claude.exe', 'claude.cmd', 'claude'] : ['claude'];
   const dirs = [
-    // The official installer, on both systems.
     path.join(home, '.local', 'bin'),
     ...(process.env.PATH || '').split(path.delimiter).filter(Boolean),
   ];
@@ -43,15 +40,8 @@ function findClaude(explicit) {
   return null;
 }
 
-/**
- * An environment the CLIs can run in when the app was opened from Finder or
- * the Start menu, which gives it almost no PATH. Their own folder goes first,
- * so a CLI that is really a Node script finds the node it was installed with.
- */
 function cliEnv(exe) {
   const env = codexEnv(exe);
-  // Started from inside another Claude session (a developer running the app
-  // from a terminal), these make the CLI report that session instead.
   for (const k of Object.keys(env)) {
     if (/^CLAUDE_CODE_/.test(k) || k === 'CLAUDECODE') delete env[k];
   }
@@ -73,8 +63,6 @@ function claudeStatus(claudePath) {
     const j = JSON.parse(r.out.slice(r.out.indexOf('{')));
     return { installed: true, signedIn: !!j.loggedIn, exe };
   } catch {
-    // A version from before `auth status` existed. It cannot be asked, so it
-    // is reported as installed and left to the first real request to decide.
     return { installed: true, signedIn: null, exe, old: true };
   }
 }
@@ -86,30 +74,53 @@ function chatgptStatus(codexPath) {
   return { installed: true, signedIn: r.status === 0 && /logged in/i.test(r.out), exe };
 }
 
-/** Both, plus which one the app should use. */
+/** All providers, plus which one the app should use. */
 function detect(settings = {}) {
   const claude = claudeStatus(settings.claudePath);
   const chatgpt = chatgptStatus(settings.codexPath);
+  const gemini = geminiStatus(settings.geminiPath, settings.geminiKey);
   const chosen = (settings.provider || 'claude').toLowerCase();
   let use = chosen;
-  // Follow the sign-in: if the chosen one is not signed in but the other is,
-  // use the other. An API key choice ('openai') is the user's explicit call
-  // and is left alone.
-  if (chosen === 'claude' && claude.signedIn === false && chatgpt.signedIn) use = 'codex';
-  // Only ChatGPT's tool is on this computer (installed with MC_AI=chatgpt):
-  // that is the one to offer, even before it is signed in.
-  if (chosen === 'claude' && !claude.installed && chatgpt.installed) use = 'codex';
-  if (chosen === 'codex' && !chatgpt.signedIn && claude.signedIn) use = 'claude';
+
+  if (chosen === 'claude' && claude.signedIn === false) {
+    if (gemini.signedIn) use = 'gemini';
+    else if (chatgpt.signedIn) use = 'codex';
+  }
+  if (chosen === 'claude' && !claude.installed) {
+    if (gemini.installed) use = 'gemini';
+    else if (chatgpt.installed) use = 'codex';
+  }
+  if (chosen === 'codex' && !chatgpt.signedIn) {
+    if (claude.signedIn) use = 'claude';
+    else if (gemini.signedIn) use = 'gemini';
+  }
+  if (chosen === 'gemini' && !gemini.signedIn) {
+    if (claude.signedIn) use = 'claude';
+    else if (chatgpt.signedIn) use = 'codex';
+  }
+
   const ready = chosen === 'openai' ? !!settings.openaiKey
-    : use === 'codex' ? !!chatgpt.signedIn : claude.signedIn !== false;
-  return { claude, chatgpt, use, ready };
+    : use === 'gemini' ? !!gemini.signedIn
+    : use === 'codex' ? !!chatgpt.signedIn
+    : claude.signedIn !== false;
+  return { claude, chatgpt, gemini, use, ready };
 }
 
 /**
- * Start a sign-in. The CLI opens the browser and waits for it to come back,
- * so this only launches it; the dashboard watches detect() for the result.
+ * Start a sign-in. Opens the browser directly and watches detect() for completion.
  */
-function signIn(which, settings = {}) {
+async function signIn(which, settings = {}) {
+  if (which === 'gemini') {
+    const exe = findGemini(settings.geminiPath);
+    if (!exe) {
+      return {
+        ok: false,
+        error: 'Google Gemini needs the Gemini CLI (@google/gemini-cli).',
+      };
+    }
+    return startGoogleOAuthSignIn();
+  }
+
   const exe = which === 'chatgpt' ? findCodex(settings.codexPath) : findClaude(settings.claudePath);
   if (!exe) {
     return { ok: false, error: which === 'chatgpt'
@@ -128,4 +139,4 @@ function signIn(which, settings = {}) {
   }
 }
 
-module.exports = { detect, signIn, findClaude, claudeStatus, chatgptStatus };
+module.exports = { detect, signIn, findClaude, claudeStatus, chatgptStatus, geminiStatus };
